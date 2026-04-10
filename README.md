@@ -4,44 +4,53 @@ A full-stack system monitoring app built entirely offline across 4 phases. Each 
 
 **Architecture:**
 ```
-C++ binary → Python collector → Node.js API → HTML Dashboard
-               (SQLite store)                    + Java alert CLI
+C++ binary → Python collector → InfluxDB → Grafana dashboard
+                                              + Node.js API
+                                              + Java alert CLI
 ```
+
+**The Stack:**
+- **InfluxDB** — Time-series database. Stores metrics with timestamps. Uses *measurements* (like tables), *tags* (indexed metadata), and *fields* (values).
+- **Grafana** — Visualization layer. Connects to InfluxDB to render dashboards with graphs, gauges, and alerts.
+- **Flux / InfluxQL** — Query languages for InfluxDB. Flux is newer and more powerful; similar to SQL but optimized for time-series.
+- **Docker** — Runs InfluxDB and Grafana locally with no manual installation.
 
 ---
 
 ## Prerequisites — Install Before You Start
 
+### Docker (for InfluxDB & Grafana)
+| Tool | Install |
+|------|---------|
+| Docker Engine | `sudo apt install docker.io` (Linux) · [docker.com/get-docker](https://www.docker.com/get-docker) (Mac/Windows) |
+| Docker Compose | Usually bundled with Docker Desktop · `sudo apt install docker-compose-plugin` (Linux) |
+
 ### C++ (Phase 1)
 | Tool | Install |
 |------|---------|
-| GCC / G++ | `sudo apt install build-essential` (Linux) · `brew install gcc` (Mac) · [MinGW-w64](https://www.mingw-w64.org/) (Windows) |
+| GCC / G++ | `sudo apt install build-essential` (Linux) · `brew install gcc` (Mac) |
 | Make (optional) | Usually bundled with build-essential |
 
 ### Python (Phase 2)
 | Package | Install |
 |---------|---------|
 | psutil | `pip install psutil` |
-| Standard library only | `sqlite3`, `subprocess`, `json`, `time` — no install needed |
+| influxdb-client | `pip install influxdb-client` |
+| Standard library only | `subprocess`, `json`, `time` — no install needed |
 
 ### Node.js (Phase 3)
 | Package | Install |
 |---------|---------|
 | Node.js runtime | [nodejs.org](https://nodejs.org) — LTS version |
 | express | `npm install express` |
-| better-sqlite3 | `npm install better-sqlite3` |
+| @influxdata/influxdb-client | `npm install @influxdata/influxdb-client` |
 | cors | `npm install cors` |
-
-### HTML Dashboard (Phase 4)
-| Library | How to get |
-|---------|------------|
-| Chart.js | Download from [cdnjs.cloudflare.com](https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js) and save locally as `chart.min.js` |
 
 ### Java (Phase 4)
 | Tool | Install |
 |------|---------|
-| JDK 17+ | [adoptium.net](https://adoptium.net) · or `sudo apt install default-jdk` |
-| Standard library only | `java.net.http`, `com.google.gson` or manual JSON parsing — no Maven needed |
+| JDK 17+ | `sudo apt install default-jdk` · [adoptium.net](https://adoptium.net) |
+| Standard library only | `java.net.http` — no Maven needed |
 
 ---
 
@@ -49,21 +58,63 @@ C++ binary → Python collector → Node.js API → HTML Dashboard
 
 ```
 local-server-monitor/
+├── docker-compose.yml          ← spins up InfluxDB + Grafana
 ├── phase1-cpp/
 │   ├── metrics.cpp
 │   └── Makefile (optional)
 ├── phase2-python/
-│   ├── collector.py
-│   └── metrics.db          ← generated at runtime
+│   └── collector.py
 ├── phase3-node/
 │   ├── server.js
 │   └── package.json
-├── phase4-dashboard/
-│   ├── index.html
-│   ├── chart.min.js        ← downloaded offline
+├── phase4-java/
 │   └── AlertChecker.java
 └── README.md
 ```
+
+---
+
+## Phase 0 — Docker: Start InfluxDB & Grafana
+
+**Goal:** Spin up InfluxDB (time-series store) and Grafana (dashboard) as local Docker containers.
+
+### Step 1: Create `docker-compose.yml`
+```yaml
+version: '3.8'
+services:
+  influxdb:
+    image: influxdb:2.7
+    ports:
+      - "8086:8086"
+    environment:
+      DOCKER_INFLUXDB_INIT_MODE: setup
+      DOCKER_INFLUXDB_INIT_USERNAME: admin
+      DOCKER_INFLUXDB_INIT_PASSWORD: adminpass
+      DOCKER_INFLUXDB_INIT_ORG: localmonitor
+      DOCKER_INFLUXDB_INIT_BUCKET: metrics
+      DOCKER_INFLUXDB_INIT_ADMIN_TOKEN: mytoken123
+
+  grafana:
+    image: grafana/grafana:10.4.0
+    ports:
+      - "3001:3000"
+    depends_on:
+      - influxdb
+```
+
+### Step 2: Start the containers
+```bash
+docker compose up -d
+```
+
+### Step 3: Verify
+- InfluxDB UI: `http://localhost:8086` (login: admin / adminpass)
+- Grafana UI: `http://localhost:3001` (login: admin / admin)
+
+### Key concepts practiced
+- Docker Compose for multi-service local environments
+- Port mapping and service dependencies
+- Environment-based configuration
 
 ---
 
@@ -109,29 +160,20 @@ g++ -o metrics metrics.cpp
 
 ## Phase 2 — Python Data Collector
 
-**Goal:** Call the C++ binary repeatedly, parse its output, and store readings in SQLite every 5 seconds.
+**Goal:** Call the C++ binary repeatedly, parse its output, and write readings to InfluxDB every 5 seconds.
 
 ### Step 1: Create the file
 ```
 phase2-python/collector.py
 ```
 
-### Step 2: Set up SQLite
+### Step 2: Set up the InfluxDB client
 ```python
-import sqlite3
+from influxdb_client import InfluxDBClient, Point
+from influxdb_client.client.write_api import SYNCHRONOUS
 
-conn = sqlite3.connect("metrics.db")
-conn.execute("""
-    CREATE TABLE IF NOT EXISTS metrics (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-        cpu_percent REAL,
-        mem_total_mb INTEGER,
-        mem_used_mb INTEGER,
-        mem_percent REAL
-    )
-""")
-conn.commit()
+client = InfluxDBClient(url="http://localhost:8086", token="mytoken123", org="localmonitor")
+write_api = client.write_api(write_options=SYNCHRONOUS)
 ```
 
 ### Step 3: Call the C++ binary
@@ -142,13 +184,16 @@ result = subprocess.run(["../phase1-cpp/metrics"], capture_output=True, text=Tru
 data = json.loads(result.stdout)
 ```
 
-### Step 4: Insert into the database
+### Step 4: Write a data point to InfluxDB
 ```python
-conn.execute(
-    "INSERT INTO metrics (cpu_percent, mem_total_mb, mem_used_mb, mem_percent) VALUES (?, ?, ?, ?)",
-    (data["cpu_percent"], data["mem_total_mb"], data["mem_used_mb"], data["mem_percent"])
+point = (
+    Point("system_metrics")
+    .tag("host", "localhost")
+    .field("cpu_percent", data["cpu_percent"])
+    .field("mem_used_mb", data["mem_used_mb"])
+    .field("mem_percent", data["mem_percent"])
 )
-conn.commit()
+write_api.write(bucket="metrics", record=point)
 ```
 
 ### Step 5: Loop every 5 seconds
@@ -156,7 +201,7 @@ conn.commit()
 import time
 
 while True:
-    # ... call binary, parse, insert ...
+    # ... call binary, parse, write point ...
     print(f"Recorded: CPU {data['cpu_percent']}% | MEM {data['mem_percent']}%")
     time.sleep(5)
 ```
@@ -164,71 +209,78 @@ while True:
 ### Step 6: Run and verify
 ```bash
 python collector.py
-# Should print a reading every 5 seconds
-# Check the DB: sqlite3 metrics.db "SELECT * FROM metrics LIMIT 5;"
+# Check data landed: open http://localhost:8086, go to Data Explorer, query the "metrics" bucket
 ```
 
 ### Key concepts practiced
 - `subprocess.run` and capturing stdout
 - JSON parsing with `json.loads`
-- SQLite with parameterised queries (prevents SQL injection)
+- Writing time-series data points with tags and fields
 - Infinite loops with `time.sleep`
 
 ---
 
 ## Phase 3 — Node.js REST API
 
-**Goal:** Serve the SQLite data over HTTP so the dashboard and Java tool can consume it.
+**Goal:** Query InfluxDB and serve metrics over HTTP so external tools can consume them.
 
 ### Step 1: Initialise the project
 ```bash
 cd phase3-node
 npm init -y
-npm install express better-sqlite3 cors
+npm install express @influxdata/influxdb-client cors
 ```
 
-### Step 2: Create `server.js`
-
+### Step 2: Create `server.js` and connect to InfluxDB
 ```javascript
 const express = require('express');
-const Database = require('better-sqlite3');
+const { InfluxDB } = require('@influxdata/influxdb-client');
 const cors = require('cors');
 
 const app = express();
-const db = new Database('../phase2-python/metrics.db', { readonly: true });
-
 app.use(cors());
+
+const influx = new InfluxDB({ url: 'http://localhost:8086', token: 'mytoken123' });
+const queryApi = influx.getQueryApi('localmonitor');
 ```
 
-### Step 3: Add the `/api/metrics` endpoint
-Returns the last N minutes of readings (default 10).
+### Step 3: Add the `/api/metrics` endpoint using Flux
 ```javascript
-app.get('/api/metrics', (req, res) => {
+app.get('/api/metrics', async (req, res) => {
     const minutes = parseInt(req.query.minutes) || 10;
-    const rows = db.prepare(`
-        SELECT * FROM metrics
-        WHERE timestamp >= datetime('now', '-' || ? || ' minutes')
-        ORDER BY timestamp ASC
-    `).all(minutes);
+    const fluxQuery = `
+        from(bucket: "metrics")
+          |> range(start: -${minutes}m)
+          |> filter(fn: (r) => r._measurement == "system_metrics")
+          |> pivot(rowKey: ["_time"], columnKey: ["_field"], valueColumn: "_value")
+    `;
+
+    const rows = [];
+    await queryApi.collectRows(fluxQuery, (row, tableMeta) => {
+        rows.push(tableMeta.toObject(row));
+    });
     res.json(rows);
 });
 ```
 
 ### Step 4: Add the `/api/metrics/summary` endpoint
-Returns averages for the last N minutes.
 ```javascript
-app.get('/api/metrics/summary', (req, res) => {
+app.get('/api/metrics/summary', async (req, res) => {
     const minutes = parseInt(req.query.minutes) || 10;
-    const row = db.prepare(`
-        SELECT
-            ROUND(AVG(cpu_percent), 2) AS avg_cpu,
-            ROUND(AVG(mem_percent), 2) AS avg_mem,
-            ROUND(MAX(cpu_percent), 2) AS max_cpu,
-            COUNT(*) AS sample_count
-        FROM metrics
-        WHERE timestamp >= datetime('now', '-' || ? || ' minutes')
-    `).get(minutes);
-    res.json(row);
+    const fluxQuery = `
+        from(bucket: "metrics")
+          |> range(start: -${minutes}m)
+          |> filter(fn: (r) => r._measurement == "system_metrics")
+          |> filter(fn: (r) => r._field == "cpu_percent" or r._field == "mem_percent")
+          |> group(columns: ["_field"])
+          |> mean()
+    `;
+
+    const rows = [];
+    await queryApi.collectRows(fluxQuery, (row, tableMeta) => {
+        rows.push(tableMeta.toObject(row));
+    });
+    res.json(rows);
 });
 ```
 
@@ -240,88 +292,72 @@ app.listen(3000, () => console.log('API running on http://localhost:3000'));
 ### Step 6: Test it
 ```bash
 node server.js
-# In another terminal:
 curl http://localhost:3000/api/metrics
 curl http://localhost:3000/api/metrics/summary
 ```
 
 ### Key concepts practiced
+- Flux query language for time-series data
+- Async/await with InfluxDB client
 - Express routing and query parameters
-- Synchronous SQLite with `better-sqlite3`
-- CORS headers for cross-origin browser requests
-- JSON responses
+- CORS headers for cross-origin requests
 
 ---
 
-## Phase 4A — HTML Dashboard
+## Phase 4A — Grafana Dashboard
 
-**Goal:** A single HTML page that fetches from your API and shows live-updating line charts.
+**Goal:** Connect Grafana to InfluxDB and build a live dashboard with charts and gauges — no code needed.
 
-### Step 1: Download Chart.js for offline use
-```bash
-# In phase4-dashboard/
-curl -o chart.min.js https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js
+### Step 1: Add InfluxDB as a data source
+1. Open Grafana at `http://localhost:3001`
+2. Go to **Connections → Data Sources → Add data source**
+3. Select **InfluxDB**
+4. Set:
+   - Query Language: **Flux**
+   - URL: `http://influxdb:8086`
+   - Organisation: `localmonitor`
+   - Token: `mytoken123`
+   - Default bucket: `metrics`
+5. Click **Save & Test**
+
+### Step 2: Create a new dashboard
+1. Go to **Dashboards → New → New Dashboard**
+2. Click **Add visualization**
+
+### Step 3: Add a CPU time-series panel
+Write this Flux query in the panel editor:
+```flux
+from(bucket: "metrics")
+  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)
+  |> filter(fn: (r) => r._measurement == "system_metrics")
+  |> filter(fn: (r) => r._field == "cpu_percent")
 ```
+Set visualization type to **Time series**, title to `CPU Usage %`.
 
-### Step 2: Create `index.html` structure
-```html
-<!DOCTYPE html>
-<html>
-<head>
-  <title>Server Monitor</title>
-  <script src="chart.min.js"></script>
-</head>
-<body>
-  <h1>Server Monitor</h1>
-  <canvas id="cpuChart" width="800" height="200"></canvas>
-  <canvas id="memChart" width="800" height="200"></canvas>
-  <script src="dashboard.js"></script>
-</body>
-</html>
+### Step 4: Add a memory gauge panel
+```flux
+from(bucket: "metrics")
+  |> range(start: -1m)
+  |> filter(fn: (r) => r._measurement == "system_metrics")
+  |> filter(fn: (r) => r._field == "mem_percent")
+  |> last()
 ```
+Set visualization type to **Gauge**, set thresholds at 70 (yellow) and 85 (red).
 
-### Step 3: Fetch data from the API
-```javascript
-async function fetchMetrics() {
-    const res = await fetch('http://localhost:3000/api/metrics?minutes=5');
-    return await res.json();
-}
-```
-
-### Step 4: Render charts with Chart.js
-```javascript
-const data = await fetchMetrics();
-const labels = data.map(r => r.timestamp);
-const cpuData = data.map(r => r.cpu_percent);
-
-new Chart(document.getElementById('cpuChart'), {
-    type: 'line',
-    data: { labels, datasets: [{ label: 'CPU %', data: cpuData }] }
-});
-```
-
-### Step 5: Auto-refresh every 10 seconds
-```javascript
-setInterval(async () => {
-    // re-fetch and update chart.data + chart.update()
-}, 10000);
-```
-
-### Step 6: Open in browser
-```bash
-# Just open index.html directly — no server needed for the dashboard itself
-```
+### Step 5: Set auto-refresh
+In the dashboard settings, set the refresh interval to **5s** so it updates live.
 
 ### Key concepts practiced
-- `fetch` and async/await
-- Chart.js datasets and `.update()`
-- `setInterval` for polling
+- Connecting Grafana to a time-series data source
+- Writing Flux queries in the panel editor
+- Gauge vs. time-series visualization types
+- Dashboard variables and time range controls
 
 ---
 
 ## Phase 4B — Java Alert CLI
 
-**Goal:** A command-line tool that calls your API, checks thresholds, and prints warnings.
+**Goal:** A command-line tool that calls your Node.js API, checks thresholds, and prints warnings.
 
 ### Step 1: Create `AlertChecker.java`
 
@@ -384,30 +420,34 @@ java AlertChecker
 
 ## Running Everything Together
 
-Open 3 terminals:
+**Step 1 — Start InfluxDB & Grafana**
+```bash
+docker compose up -d
+```
 
-**Terminal 1 — Start the collector**
+**Step 2 — Start the collector**
 ```bash
 cd phase2-python
 python collector.py
 ```
 
-**Terminal 2 — Start the API**
+**Step 3 — Start the API**
 ```bash
 cd phase3-node
 node server.js
 ```
 
-**Terminal 3 — Run the alert checker (optional)**
+**Step 4 — View the dashboard**
+Open Grafana at `http://localhost:3001` — data should appear within 10 seconds.
+
+**Step 5 — Run the alert checker (optional)**
 ```bash
-cd phase4-dashboard
+cd phase4-java
 java AlertChecker
 ```
-
-Then open `phase4-dashboard/index.html` in your browser.
 
 ---
 
 ## What You Can Say in the Interview
 
-> "Over the weekend I built a small version of what your team works on — a multi-language metrics pipeline. A C++ binary reads system stats and prints JSON, Python polls it every 5 seconds and stores readings in SQLite, a Node.js API serves the data, and a live HTML dashboard charts it. I also wrote a Java CLI alert tool on top of the same API. The whole thing runs offline."
+> "Over the weekend I built a small version of what your team works on — a multi-language metrics pipeline. A C++ binary reads system stats and prints JSON, Python polls it every 5 seconds and writes to InfluxDB, and Grafana visualises the live data with time-series charts and gauges. I also built a Node.js API that queries InfluxDB using Flux, and a Java CLI alert tool on top of it. The whole thing runs offline with Docker."
