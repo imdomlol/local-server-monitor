@@ -22,9 +22,9 @@ def main():
         with InfluxDBClient(url=INFLUX_URL, token=INFLUX_TOKEN, org=INFLUX_ORG) as client:
             write_api = client.write_api(write_options=SYNCHRONOUS)
             point = Point("system_metrics")
-            point.field("cpu_percent", data["cpu_percent"])
-            point.field("mem_percent", data["mem_percent"])
-            point.field("mem_used_kb", data["mem_used_kb"])
+            point.field("cpu_percent", float(data["cpu_percent"]))
+            point.field("mem_percent", float(data["mem_percent"]))
+            point.field("mem_used_kb", float(data["mem_used_kb"]))
             write_api.write(bucket=INFLUX_BUCKET, record=point)
             print("Metrics written to InfluxDB")
         
