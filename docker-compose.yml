@@ -11,6 +11,8 @@ services:
       DOCKER_INFLUXDB_INIT_ORG: localmonitor
       DOCKER_INFLUXDB_INIT_BUCKET: metrics
       DOCKER_INFLUXDB_INIT_ADMIN_TOKEN: mytoken123
+    volumes:
+      - influxdb_data:/var/lib/influxdb2
 
   grafana:
     image: grafana/grafana:10.4.0
@@ -18,3 +20,9 @@ services:
       - "3001:3000"
     depends_on:
       - influxdb
+    volumes:
+      - grafana_data:/var/lib/grafana
+
+volumes:
+  influxdb_data:
+  grafana_data:
