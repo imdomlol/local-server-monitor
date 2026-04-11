@@ -4,8 +4,7 @@ import time
 from influxdb_client import InfluxDBClient, Point
 from influxdb_client.client.write_api import SYNCHRONOUS
 
-METRICS_BINARY = "../phase1-cpp/metrics"
-
+METRICS_BINARY = "../LocalMonitor/phase1-cpp/metrics"
 INFLUX_URL    = "http://localhost:8086"
 INFLUX_TOKEN  = "mytoken123"
 INFLUX_ORG    = "localmonitor"

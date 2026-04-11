@@ -53,23 +53,23 @@ int main() {
     }
 
     std::string key;
-    long long mem_total_kb = 0, mem_free_kb = 0;
+    long long mem_total_kb = 0, mem_available_kb = 0;
     while (file >> key) {
         if (key == "MemTotal:") {
             file >> mem_total_kb;
-        } else if (key == "MemFree:") {
-            file >> mem_free_kb;
+        } else if (key == "MemAvailable:") {
+            file >> mem_available_kb;
         }
 
-        if (mem_total_kb && mem_free_kb) {
+        if (mem_total_kb && mem_available_kb) {
             break;
         }
     }
     file.close();
 
     // Calculate memory usage percentage
-    double mem_percent = 100.0 * (mem_total_kb - mem_free_kb) / mem_total_kb;
-    long long mem_used_kb = mem_total_kb - mem_free_kb;
+    double mem_percent = 100.0 * (mem_total_kb - mem_available_kb) / mem_total_kb;
+    long long mem_used_kb = mem_total_kb - mem_available_kb;
 
     std::cout << "{\"cpu_percent\":" << cpu_percent
               << ",\"mem_percent\":" << mem_percent
